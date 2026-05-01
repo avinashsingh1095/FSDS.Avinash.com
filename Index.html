@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Particle System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #videoElement { display: none; } /* Hide raw video, we use Three.js canvas */
+        #ui { position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif; pointer-events: none; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <h2>Gesture Particle Engine</h2>
+        <p>Status: <span id="status">Loading Camera/ML...</span></p>
+        <p>Current Shape: <span id="shape-name">Sphere</span></p>
+    </div>
+
+    <video id="videoElement" autoplay playsinline></video>
+    <canvas id="outputCanvas"></canvas>
+
+    <script>
+        // --- 1. THREE.JS SETUP ---
+        const canvas = document.getElementById('outputCanvas');
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 300;
+
+        // --- 2. PARTICLE SYSTEM & TEMPLATES ---
+        const particleCount = 5000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        let targetPositions = new Float32Array(particleCount * 3); // For morphing
+
+        // Initialize with random positions
+        for(let i = 0; i < particleCount * 3; i++) {
+            positions[i] = (Math.random() - 0.5) * 200;
+            targetPositions[i] = positions[i];
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+        const material = new THREE.PointsMaterial({
+            size: 2,
+            color: 0x00ffcc,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // Template Generators
+        const shapes = {
+            sphere: () => {
+                const arr = new Float32Array(particleCount * 3);
+                for(let i = 0; i < particleCount; i++) {
+                    const phi = Math.acos(-1 + (2 * i) / particleCount);
+                    const theta = Math.sqrt(particleCount * Math.PI) * phi;
+                    const r = 100;
+                    arr[i*3] = r * Math.cos(theta) * Math.sin(phi);
+                    arr[i*3+1] = r * Math.sin(theta) * Math.sin(phi);
+                    arr[i*3+2] = r * Math.cos(phi);
+                }
+                return arr;
+            },
+            heart: () => {
+                const arr = new Float32Array(particleCount * 3);
+                for(let i = 0; i < particleCount; i++) {
+                    const t = Math.random() * Math.PI * 2;
+                    // Parametric heart equation
+                    const x = 16 * Math.pow(Math.sin(t), 3);
+                    const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+                    const z = (Math.random() - 0.5) * 10; // Add some depth
+                    // Scale it up
+                    arr[i*3] = x * 6;
+                    arr[i*3+1] = y * 6;
+                    arr[i*3+2] = z;
+                }
+                return arr;
+            },
+            saturn: () => {
+                const arr = new Float32Array(particleCount * 3);
+                const planetCount = Math.floor(particleCount * 0.4);
+                // Center planet
+                for(let i = 0; i < planetCount; i++) {
+                    const phi = Math.acos(-1 + (2 * i) / planetCount);
+                    const theta = Math.sqrt(planetCount * Math.PI) * phi;
+                    const r = 50;
+                    arr[i*3] = r * Math.cos(theta) * Math.sin(phi);
+                    arr[i*3+1] = r * Math.sin(theta) * Math.sin(phi);
+                    arr[i*3+2] = r * Math.cos(phi);
+                }
+                // Ring
+                for(let i = planetCount; i < particleCount; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const r = 80 + Math.random() * 40;
+                    arr[i*3] = Math.cos(angle) * r;
+                    arr[i*3+1] = (Math.random() - 0.5) * 5; // Flat ring
+                    arr[i*3+2] = Math.sin(angle) * r;
+                }
+                return arr;
+            }
+        };
+
+        // Default shape
+        targetPositions = shapes.sphere();
+        let targetColor = new THREE.Color(0x00ffcc);
+        let targetScale = 1.0;
+
+        // --- 3. MEDIAPIPE GESTURE LOGIC ---
+        const videoElement = document.getElementById('videoElement');
+        const uiStatus = document.getElementById('status');
+        const uiShape = document.getElementById('shape-name');
+
+        function onResults(results) {
+            uiStatus.innerText = "Tracking Active";
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Extract specific joints
+                const wrist = landmarks[0];
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const middleTip = landmarks[12];
+                const ringTip = landmarks[16];
+                const pinkyTip = landmarks[20];
+
+                // Simple Gesture Recognition (Counting extended fingers)
+                // A finger is considered extended if its tip is higher (lower y value) than its base knuckle
+                let fingersUp = 0;
+                if (indexTip.y < landmarks[6].y) fingersUp++;
+                if (middleTip.y < landmarks[10].y) fingersUp++;
+                if (ringTip.y < landmarks[14].y) fingersUp++;
+                if (pinkyTip.y < landmarks[18].y) fingersUp++;
+
+                // Determine shape based on gesture
+                if (fingersUp === 0) {
+                    // Fist
+                    targetPositions = shapes.saturn();
+                    targetColor.setHex(0x00ffff); // Cyan
+                    uiShape.innerText = "Saturn (Fist)";
+                } else if (fingersUp === 2) {
+                    // Peace Sign
+                    targetPositions = shapes.heart();
+                    targetColor.setHex(0xff0066); // Pink
+                    uiShape.innerText = "Heart (Peace Sign)";
+                } else if (fingersUp >= 4) {
+                    // Open Hand
+                    targetPositions = shapes.sphere();
+                    targetColor.setHex(0x00ffcc); // Greenish
+                    uiShape.innerText = "Sphere (Open Hand)";
+                }
+
+                // Dynamic Expansion: Distance between wrist and index finger controls scale
+                const dx = indexTip.x - wrist.x;
+                const dy = indexTip.y - wrist.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                // Map the distance (usually 0.1 to 0.5) to a scale factor (0.5 to 2.5)
+                targetScale = Math.max(0.5, Math.min(distance * 5, 2.5));
+            } else {
+                // If no hand, return to default slowly
+                targetScale = 1.0;
+                uiStatus.innerText = "Waiting for hand...";
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        cameraFeed.start();
+
+        // --- 4. ANIMATION LOOP & MORPHING ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Rotate the particle system slightly for a 3D effect
+            particles.rotation.y += 0.005;
+            particles.rotation.x += 0.002;
+
+            // Lerp (smoothly interpolate) positions to morph shapes
+            const positionsArr = geometry.attributes.position.array;
+            for(let i = 0; i < positionsArr.length; i++) {
+                // Move current position 5% towards the target position every frame
+                positionsArr[i] += (targetPositions[i] - positionsArr[i]) * 0.05;
+            }
+            geometry.attributes.position.needsUpdate = true;
+
+            // Lerp color
+            material.color.lerp(targetColor, 0.05);
+
+            // Lerp scale/expansion based on hand stretch
+            particles.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.1);
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
+
