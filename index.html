@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FSDS — Finger Structure Detection System</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --cyan:    #00F5FF;
+    --violet:  #BF5FFF;
+    --pink:    #FF3F8E;
+    --green:   #00FF88;
+    --white:   #FFFFFF;
+    --bg:      #00030A;
+    --dim:     rgba(0, 245, 255, 0.35);
+  }
+
+  body {
+    background: var(--bg);
+    overflow: hidden;
+    font-family: 'Share Tech Mono', monospace;
+    color: var(--cyan);
+    user-select: none;
+    cursor: none;
+  }
+
+  /* ── Custom Cursor ─────────────────────────────────── */
+  #cursor {
+    position: fixed;
+    width: 20px; height: 20px;
+    border: 1px solid var(--cyan);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%, -50%);
+    transition: width .15s, height .15s;
+    box-shadow: 0 0 8px var(--cyan);
+  }
+  #cursor::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 3px; height: 3px;
+    border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 6px var(--cyan);
+  }
+
+  /* ── Main Canvas ───────────────────────────────────── */
+  #mainCanvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    display: block;
+  }
+
+  /* ── Scanline Overlay ──────────────────────────────── */
+  #scanlines {
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 3px,
+      rgba(0,0,0,0.04) 3px, rgba(0,0,0,0.04) 4px
+    );
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  /* ── Moving scan beam ──────────────────────────────── */
+  #scanBeam {
+    position: fixed;
+    left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(0,245,255,0.08) 30%,
+      rgba(0,245,255,0.25) 50%,
+      rgba(0,245,255,0.08) 70%,
+      transparent 100%
+    );
+    animation: scanMove 5s linear infinite;
+    pointer-events: none;
+    z-index: 6;
+  }
+  @keyframes scanMove {
+    0%   { top: -2px; opacity: 0; }
+    5%   { opacity: 1; }
+    95%  { opacity: 0.6; }
+    100% { top: 100vh; opacity: 0; }
+  }
+
+  /* ── Corner Brackets ───────────────────────────────── */
+  .bracket {
+    position: fixed;
+    width: 55px; height: 55px;
+    border-color: var(--cyan);
+    border-style: solid;
+    opacity: 0.6;
+    z-index: 20;
+    transition: opacity .3s;
+  }
+  .bracket:hover { opacity: 1; }
+  .bracket-tl { top: 18px; left: 18px; border-width: 2px 0 0 2px; }
+  .bracket-tr { top: 18px; right: 18px; border-width: 2px 2px 0 0; }
+  .bracket-bl { bottom: 18px; left: 18px; border-width: 0 0 2px 2px; }
+  .bracket-br { bottom: 18px; right: 18px; border-width: 0 2px 2px 0; }
+
+  /* ── HUD Panels ────────────────────────────────────── */
+  .hud { position: fixed; z-index: 20; pointer-events: none; }
+
+  /* Top-Left: Branding */
+  .hud-tl { top: 24px; left: 84px; }
+  .fsds-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 20px; font-weight: 900;
+    color: var(--cyan);
+    text-shadow: 0 0 18px var(--cyan), 0 0 40px rgba(0,245,255,.4);
+    letter-spacing: .22em;
+  }
+  .fsds-sub {
+    font-size: 9px;
+    color: rgba(0,245,255,.5);
+    letter-spacing: .32em;
+    margin-top: 3px;
+  }
+  .status-row {
+    display: flex; align-items: center; gap: 7px;
+    margin-top: 9px; font-size: 10px;
+    color: rgba(0,245,255,.75); letter-spacing: .1em;
+  }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #555;
+    transition: background .5s, box-shadow .5s;
+  }
+  .status-dot.active { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
+  .status-dot.error  { background: #FF3F3F; box-shadow: 0 0 8px #FF3F3F; }
+  @keyframes pulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%      { opacity:.4; transform:scale(.75); }
+  }
+
+  /* Top-Right: Metrics */
+  .hud-tr { top: 24px; right: 84px; text-align: right; }
+  .metric-block { margin-bottom: 10px; }
+  .metric-value {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 30px; font-weight: 700; line-height: 1;
+    color: var(--cyan);
+    text-shadow: 0 0 12px var(--cyan);
+  }
+  .metric-value.sm { font-size: 18px; }
+  .metric-label {
+    font-size: 9px; letter-spacing: .28em;
+    color: rgba(0,245,255,.45); text-transform: uppercase;
+  }
+
+  /* Bottom-Left: Hand Info */
+  .hud-bl { bottom: 24px; left: 84px; }
+  .data-row {
+    font-size: 10px; line-height: 1.8;
+    color: rgba(0,245,255,.65); letter-spacing: .07em;
+  }
+  .data-row .val { color: var(--violet); }
+
+  /* Bottom-Right: Coordinates */
+  .hud-br { bottom: 24px; right: 84px; text-align: right; }
+
+  /* Centre bottom: landmark count bar */
+  #landmarkBar {
+    position: fixed;
+    bottom: 30px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; z-index: 20; pointer-events: none;
+  }
+  .lm-tick {
+    width: 4px; height: 14px;
+    background: rgba(0,245,255,.15);
+    border-radius: 2px;
+    transition: background .2s, box-shadow .2s;
+  }
+  .lm-tick.active {
+    background: var(--cyan);
+    box-shadow: 0 0 6px var(--cyan);
+  }
+
+  /* ── Loading Screen ────────────────────────────────── */
+  #loadScreen {
+    position: fixed; inset: 0;
+    background: #000;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 200;
+    transition: opacity .8s;
+  }
+  #loadScreen.fade-out { opacity: 0; pointer-events: none; }
+  .load-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 36px; font-weight: 900;
+    color: var(--cyan);
+    text-shadow: 0 0 30px var(--cyan), 0 0 60px rgba(0,245,255,.3);
+    letter-spacing: .35em;
+    animation: flicker 4s infinite;
+  }
+  .load-sub {
+    font-size: 10px; letter-spacing: .4em;
+    color: rgba(0,245,255,.35); margin-top: 6px;
+  }
+  .load-bar-wrap {
+    width: 280px; height: 2px;
+    background: rgba(0,245,255,.15);
+    margin: 28px 0 14px;
+    position: relative; overflow: hidden;
+  }
+  .load-bar {
+    height: 100%; width: 0%;
+    background: var(--cyan);
+    box-shadow: 0 0 10px var(--cyan);
+    transition: width .4s ease;
+  }
+  .load-status {
+    font-size: 10px; letter-spacing: .25em;
+    color: rgba(0,245,255,.55);
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes flicker {
+    0%,90%,100% { opacity:1; }
+    91%          { opacity:.7; }
+    93%          { opacity:1; }
+    95%          { opacity:.5; }
+    97%          { opacity:1; }
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  /* ── Key Hints ─────────────────────────────────────── */
+  #keyHints {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    font-size: 9px; letter-spacing: .2em;
+    color: rgba(0,245,255,.25); z-index: 20; pointer-events: none;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<!-- Custom cursor -->
+<div id="cursor"></div>
+
+<!-- Loading screen -->
+<div id="loadScreen">
+  <div class="load-title">FSDS</div>
+  <div class="load-sub">FINGER STRUCTURE DETECTION SYSTEM</div>
+  <div class="load-bar-wrap"><div class="load-bar" id="loadBar"></div></div>
+  <div class="load-status" id="loadStatus">INITIALIZING MEDIAPIPE ENGINE...</div>
+</div>
+
+<!-- Main render canvas -->
+<canvas id="mainCanvas"></canvas>
+
+<!-- Visual overlays -->
+<div id="scanlines"></div>
+<div id="scanBeam"></div>
+<div class="bracket bracket-tl"></div>
+<div class="bracket bracket-tr"></div>
+<div class="bracket bracket-bl"></div>
+<div class="bracket bracket-br"></div>
+
+<!-- HUD: Top Left -->
+<div class="hud hud-tl">
+  <div class="fsds-title">FSDS</div>
+  <div class="fsds-sub">FINGER STRUCTURE DETECTION SYSTEM</div>
+  <div class="status-row">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">INITIALIZING</span>
+  </div>
+</div>
+
+<!-- HUD: Top Right -->
+<div class="hud hud-tr">
+  <div class="metric-block">
+    <div class="metric-value" id="fpsVal">--</div>
+    <div class="metric-label">FPS</div>
+  </div>
+  <div class="metric-block">
+    <div class="metric-value sm" id="handsVal">0</div>
+    <div class="metric-label">HANDS DETECTED</div>
+  </div>
+  <div class="metric-block">
+    <div class="metric-value sm" id="lmVal">0 / 21</div>
+    <div class="metric-label">LANDMARKS</div>
+  </div>
+</div>
+
+<!-- HUD: Bottom Left -->
+<div class="hud hud-bl">
+  <div class="data-row">CHIRALITY &nbsp;<span class="val" id="chiralVal">——</span></div>
+  <div class="data-row">CONFIDENCE <span class="val" id="confVal">——</span></div>
+  <div class="data-row">MODEL &nbsp;&nbsp;&nbsp;&nbsp;<span class="val">MEDIAPIPE v0.4</span></div>
+  <div class="data-row">TOPOLOGY &nbsp;<span class="val">21 LM / 22 EDGES</span></div>
+</div>
+
+<!-- HUD: Bottom Right -->
+<div class="hud hud-br">
+  <div class="data-row">WRIST X <span class="val" id="wx">——</span></div>
+  <div class="data-row">WRIST Y <span class="val" id="wy">——</span></div>
+  <div class="data-row">WRIST Z <span class="val" id="wz">——</span></div>
+  <div class="data-row" style="margin-top:6px">INDEX TIP X <span class="val" id="itx">——</span></div>
+  <div class="data-row">INDEX TIP Y <span class="val" id="ity">——</span></div>
+</div>
+
+<!-- 21-tick landmark bar -->
+<div id="landmarkBar">
+  <!-- ticks injected by JS -->
+</div>
+
+<!-- Key hints -->
+<div id="keyHints">[L] LABELS &nbsp;|&nbsp; [G] GRID &nbsp;|&nbsp; [T] TRAILS &nbsp;|&nbsp; [ESC] RESET</div>
+
+<!-- Hidden video for MediaPipe -->
+<video id="inputVideo" autoplay playsinline muted style="display:none;"></video>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+//  FSDS — Finger Structure Detection System
+//  Option B: Web Browser  |  MediaPipe Hands + Canvas 2D
+// ══════════════════════════════════════════════════════════════
+
+// ── Configuration ──────────────────────────────────────────
+const CFG = {
+  maxHands:       2,
+  modelComplexity: 1,
+  detectionConf:  0.75,
+  trackingConf:   0.6,
+  trailLength:    10,
+  showLabels:     false,
+  showGrid:       false,
+  showTrails:     true,
+  glowIntensity:  1.0,
+};
+
+// ── Hand skeleton: 22 bone connections ─────────────────────
+const BONES = [
+  // Thumb  (4)
+  [0,1],[1,2],[2,3],[3,4],
+  // Index  (4)
+  [0,5],[5,6],[6,7],[7,8],
+  // Middle (3 + 1 palm)
+  [5,9],[9,10],[10,11],[11,12],
+  // Ring   (3 + 1 palm)
+  [9,13],[13,14],[14,15],[15,16],
+  // Pinky  (4)
+  [13,17],[17,18],[18,19],[19,20],
+  // Palm cross
+  [0,17],[0,9],[0,13],
+];
+
+// Landmark roles for styling
+const TIPS     = new Set([4,8,12,16,20]);
+const MCPS     = new Set([1,5,9,13,17]);
+const WRIST    = 0;
+
+// Colour theme
+const C = {
+  core:   '#00F5FF',
+  tip:    '#FF3F8E',
+  wrist:  '#FFFFFF',
+  glow:   '#00F5FF',
+  trail:  'rgba(0,245,255,',
+  purple: '#BF5FFF',
+};
+
+// ── State ──────────────────────────────────────────────────
+let latestResults = null;
+let trails        = [];   // [handIdx][landmarkIdx] = [{x,y}]
+let fps           = 0;
+let frameCount    = 0;
+let lastFpsTime   = performance.now();
+let pulseT        = 0;    // for pulsing animations
+
+// ── DOM ────────────────────────────────────────────────────
+const canvas  = document.getElementById('mainCanvas');
+const ctx     = canvas.getContext('2d');
+const video   = document.getElementById('inputVideo');
+const cursor  = document.getElementById('cursor');
+
+// Build landmark ticks
+const lmBar = document.getElementById('landmarkBar');
+for (let i = 0; i < 21; i++) {
+  const t = document.createElement('div');
+  t.className = 'lm-tick';
+  t.id = `tick-${i}`;
+  lmBar.appendChild(t);
+}
+
+// Resize canvas
+function resize() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Custom cursor
+document.addEventListener('mousemove', e => {
+  cursor.style.left = e.clientX + 'px';
+  cursor.style.top  = e.clientY + 'px';
+});
+
+// Key bindings
+document.addEventListener('keydown', e => {
+  switch (e.key.toLowerCase()) {
+    case 'l': CFG.showLabels = !CFG.showLabels; break;
+    case 'g': CFG.showGrid   = !CFG.showGrid;   break;
+    case 't': CFG.showTrails = !CFG.showTrails;  break;
+    case 'escape': trails = []; latestResults = null; break;
+  }
+});
+
+// ── Loading sequence ────────────────────────────────────────
+const loadBar    = document.getElementById('loadBar');
+const loadStatus = document.getElementById('loadStatus');
+const loadSteps  = [
+  { pct: 20,  msg: 'LOADING NEURAL NETWORK WEIGHTS...' },
+  { pct: 45,  msg: 'LOADING CAMERA UTILITIES...' },
+  { pct: 65,  msg: 'CONFIGURING DETECTION PIPELINE...' },
+  { pct: 82,  msg: 'REQUESTING CAMERA ACCESS...' },
+  { pct: 100, msg: 'SYSTEM ONLINE — HAND TRACKING ACTIVE' },
+];
+let loadIdx = 0;
+function advanceLoad() {
+  if (loadIdx >= loadSteps.length) return;
+  const s = loadSteps[loadIdx++];
+  loadBar.style.width = s.pct + '%';
+  loadStatus.textContent = s.msg;
+  return s;
+}
+
+// ── Script loader ────────────────────────────────────────────
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = s.crossOrigin = src; // trick: just set src
+    s.src = src;
+    s.onload  = res;
+    s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  MAIN INIT
+// ══════════════════════════════════════════════════════════════
+(async function init() {
+  advanceLoad(); // 20%
+
+  try {
+    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js');
+    advanceLoad(); // 45%
+    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js');
+    advanceLoad(); // 65%
+
+    // ── MediaPipe Hands ─────────────────────────────────
+    const hands = new Hands({
+      locateFile: f =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${f}`
+    });
+
+    hands.setOptions({
+      maxNumHands:           CFG.maxHands,
+      modelComplexity:       CFG.modelComplexity,
+      minDetectionConfidence: CFG.detectionConf,
+      minTrackingConfidence:  CFG.trackingConf,
+    });
+
+    hands.onResults(results => {
+      latestResults = results;
+      updateHUD(results);
+    });
+
+    advanceLoad(); // 82%
+
+    // ── Camera ──────────────────────────────────────────
+    const camera = new Camera(video, {
+      onFrame: async () => {
+        await hands.send({ image: video });
+        renderFrame();
+      },
+      width: 1280,
+      height: 720,
+    });
+
+    await camera.start();
+
+    advanceLoad(); // 100%
+
+    setTimeout(() => {
+      const ls = document.getElementById('loadScreen');
+      ls.classList.add('fade-out');
+      setTimeout(() => ls.remove(), 900);
+    }, 900);
+
+    setOnline();
+
+  } catch (err) {
+    console.error('FSDS init error:', err);
+    loadStatus.textContent = 'ERROR: ' + (err.message || 'CAMERA ACCESS DENIED');
+    loadStatus.style.color = '#FF3F3F';
+    setError();
+  }
+})();
+
+function setOnline() {
+  document.getElementById('statusDot').className = 'status-dot active';
+  document.getElementById('statusText').textContent = 'TRACKING ACTIVE';
+}
+function setError() {
+  document.getElementById('statusDot').className = 'status-dot error';
+  document.getElementById('statusText').textContent = 'ERROR';
+}
+
+// ══════════════════════════════════════════════════════════════
+//  RENDER LOOP
+// ══════════════════════════════════════════════════════════════
+function renderFrame() {
+  const W = canvas.width;
+  const H = canvas.height;
+  pulseT = performance.now() * 0.001;
+
+  // ── FPS ──────────────────────────────────────────────
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsTime >= 500) {
+    fps = Math.round(frameCount * 1000 / (now - lastFpsTime));
+    frameCount = 0;
+    lastFpsTime = now;
+    document.getElementById('fpsVal').textContent = fps.toString().padStart(2, '0');
+  }
+
+  ctx.clearRect(0, 0, W, H);
+
+  // ── Webcam background (mirrored) ─────────────────────
+  ctx.save();
+  ctx.translate(W, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, W, H);
+  ctx.restore();
+
+  // ── Dark tint for contrast ───────────────────────────
+  ctx.fillStyle = 'rgba(0, 4, 12, 0.58)';
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Vignette ─────────────────────────────────────────
+  const vig = ctx.createRadialGradient(W/2, H/2, H*0.25, W/2, H/2, H*0.88);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.72)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Optional debug grid ───────────────────────────────
+  if (CFG.showGrid) drawGrid(W, H);
+
+  // ── No hand — idle indicator ──────────────────────────
+  if (!latestResults?.multiHandLandmarks?.length) {
+    drawIdleReticle(W, H);
+    return;
+  }
+
+  // ── Render each hand ─────────────────────────────────
+  latestResults.multiHandLandmarks.forEach((lms, hi) => {
+    // Init trail storage
+    if (!trails[hi]) {
+      trails[hi] = Array.from({ length: 21 }, () => []);
+    }
+
+    // World-space (mirrored) coords
+    const pts = lms.map(lm => ({
+      x: (1 - lm.x) * W,
+      y: lm.y * H,
+      z: lm.z,
+    }));
+
+    // Update trails
+    if (CFG.showTrails) {
+      pts.forEach((p, li) => {
+        trails[hi][li].push({ x: p.x, y: p.y });
+        if (trails[hi][li].length > CFG.trailLength)
+          trails[hi][li].shift();
+      });
+      drawTrails(trails[hi]);
+    }
+
+    // Bones
+    drawBones(pts, W, H);
+
+    // Joints
+    drawJoints(pts);
+  });
+
+  // Trim stale trail data
+  if (trails.length > latestResults.multiHandLandmarks.length) {
+    trails = trails.slice(0, latestResults.multiHandLandmarks.length);
+  }
+
+  // Update tick bar
+  const lmCount = latestResults.multiHandLandmarks[0]?.length ?? 0;
+  for (let i = 0; i < 21; i++) {
+    const t = document.getElementById(`tick-${i}`);
+    if (t) t.className = 'lm-tick' + (i < lmCount ? ' active' : '');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DRAWING PRIMITIVES
+// ══════════════════════════════════════════════════════════════
+
+// ── Skeleton bones ───────────────────────────────────────────
+function drawBones(pts, W, H) {
+  BONES.forEach(([a, b]) => {
+    const pa = pts[a], pb = pts[b];
+    const avgZ = (pa.z + pb.z) / 2;
+
+    // Depth → 0 (close/bright) … 1 (far/dim)
+    const d = Math.max(0, Math.min(1, (avgZ + 0.12) / 0.24));
+
+    // Interpolate cyan → violet based on depth
+    const r = Math.round(d * 191);
+    const g = Math.round((1 - d) * 245);
+    const bv = 255;
+    const col = `rgb(${r},${g},${bv})`;
+    const alpha = 1 - d * 0.45;
+
+    // Pulsing width
+    const pulse = 1 + 0.12 * Math.sin(pulseT * 2.5 + a * 0.4);
+
+    glowLine(pa.x, pa.y, pb.x, pb.y, col, alpha, pulse);
+  });
+}
+
+// ── Joint spheres ─────────────────────────────────────────────
+function drawJoints(pts) {
+  pts.forEach((p, idx) => {
+    const isTip    = TIPS.has(idx);
+    const isMCP    = MCPS.has(idx);
+    const isWrist  = idx === WRIST;
+
+    const r     = isWrist ? 8 : isTip ? 7 : isMCP ? 5 : 3.5;
+    const col   = isTip ? C.tip : isWrist ? C.wrist : C.core;
+    const glow  = isTip ? '#FF3F8E' : isWrist ? '#88CCFF' : C.glow;
+
+    glowPoint(p.x, p.y, r, col, glow);
+
+    // Fingertip pulsing ring
+    if (isTip) {
+      const rr = r + 6 + 2 * Math.sin(pulseT * 3 + idx);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,63,142,0.45)';
+      ctx.lineWidth = 1;
+      ctx.shadowBlur = 6;
+      ctx.shadowColor = C.tip;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Wrist target reticle
+    if (isWrist) {
+      const sz = 18 + 4 * Math.sin(pulseT * 1.2);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 1;
+      // crosshair
+      ctx.beginPath();
+      ctx.moveTo(p.x - sz, p.y); ctx.lineTo(p.x - 6, p.y);
+      ctx.moveTo(p.x + 6, p.y); ctx.lineTo(p.x + sz, p.y);
+      ctx.moveTo(p.x, p.y - sz); ctx.lineTo(p.x, p.y - 6);
+      ctx.moveTo(p.x, p.y + 6); ctx.lineTo(p.x, p.y + sz);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Optional landmark labels
+    if (CFG.showLabels) {
+      ctx.save();
+      ctx.font = '8px Share Tech Mono, monospace';
+      ctx.fillStyle = 'rgba(0,245,255,0.7)';
+      ctx.fillText(idx, p.x + r + 2, p.y - r);
+      ctx.restore();
+    }
+  });
+}
+
+// ── Motion trails ─────────────────────────────────────────────
+function drawTrails(handTrails) {
+  handTrails.forEach(trail => {
+    if (trail.length < 2) return;
+    for (let i = 1; i < trail.length; i++) {
+      const a = (i / trail.length) * 0.28;
+      ctx.save();
+      ctx.strokeStyle = C.trail + a + ')';
+      ctx.lineWidth   = 1;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      ctx.moveTo(trail[i-1].x, trail[i-1].y);
+      ctx.lineTo(trail[i].x,   trail[i].y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  });
+}
+
+// ── Idle reticle ──────────────────────────────────────────────
+function drawIdleReticle(W, H) {
+  const cx = W / 2, cy = H / 2;
+  const r  = 60 + 8 * Math.sin(pulseT);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,245,255,0.2)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 8]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+  // cross
+  const s = 20;
+  ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(0,245,255,0.15)';
+  ctx.beginPath();
+  ctx.moveTo(cx - r - s, cy); ctx.lineTo(cx + r + s, cy);
+  ctx.moveTo(cx, cy - r - s); ctx.lineTo(cx, cy + r + s);
+  ctx.stroke();
+  // label
+  ctx.font = '10px Share Tech Mono, monospace';
+  ctx.fillStyle = 'rgba(0,245,255,0.3)';
+  ctx.textAlign = 'center';
+  ctx.fillText('AWAITING HAND INPUT', cx, cy + r + 28);
+  ctx.restore();
+}
+
+// ── Debug grid ─────────────────────────────────────────────
+function drawGrid(W, H) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,245,255,0.06)';
+  ctx.lineWidth = 1;
+  const step = 60;
+  for (let x = 0; x < W; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  GLOW PRIMITIVES  (multi-pass soft-blur simulation)
+// ══════════════════════════════════════════════════════════════
+
+function glowLine(x1, y1, x2, y2, col, alpha, widthMult = 1) {
+  ctx.save();
+  ctx.lineCap = 'round';
+
+  // Pass 1 – wide outer bloom
+  ctx.globalAlpha  = alpha * 0.07 * CFG.glowIntensity;
+  ctx.strokeStyle  = col;
+  ctx.lineWidth    = 14 * widthMult;
+  ctx.shadowBlur   = 0;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+  // Pass 2 – mid glow
+  ctx.globalAlpha  = alpha * 0.18 * CFG.glowIntensity;
+  ctx.lineWidth    = 5 * widthMult;
+  ctx.shadowBlur   = 10;
+  ctx.shadowColor  = col;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+  // Pass 3 – bright core
+  ctx.globalAlpha  = alpha * 0.85;
+  ctx.lineWidth    = 1.4 * widthMult;
+  ctx.shadowBlur   = 4;
+  ctx.shadowColor  = col;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+  ctx.restore();
+}
+
+function glowPoint(x, y, r, col, glowCol) {
+  ctx.save();
+
+  // Halo
+  ctx.globalAlpha = 0.12 * CFG.glowIntensity;
+  const halo = ctx.createRadialGradient(x, y, 0, x, y, r * 5);
+  halo.addColorStop(0, glowCol);
+  halo.addColorStop(1, 'transparent');
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(x, y, r * 5, 0, Math.PI * 2); ctx.fill();
+
+  // Orb
+  ctx.globalAlpha = 0.7;
+  const orb = ctx.createRadialGradient(x, y, 0, x, y, r * 1.6);
+  orb.addColorStop(0,   '#FFFFFF');
+  orb.addColorStop(0.35, glowCol);
+  orb.addColorStop(1,   'transparent');
+  ctx.fillStyle = orb;
+  ctx.beginPath(); ctx.arc(x, y, r * 1.6, 0, Math.PI * 2); ctx.fill();
+
+  // Hot core
+  ctx.globalAlpha  = 1;
+  ctx.fillStyle    = '#FFFFFF';
+  ctx.shadowBlur   = 12;
+  ctx.shadowColor  = col;
+  ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, Math.PI * 2); ctx.fill();
+
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HUD UPDATER
+// ══════════════════════════════════════════════════════════════
+function updateHUD(results) {
+  const count = results.multiHandLandmarks?.length ?? 0;
+  document.getElementById('handsVal').textContent = count;
+  document.getElementById('lmVal').textContent = (count > 0 ? count * 21 : 0) + ' / ' + (CFG.maxHands * 21);
+
+  if (count > 0) {
+    const lms = results.multiHandLandmarks[0];
+    const handedness = results.multiHandedness?.[0];
+    const w = lms[0];
+    const it = lms[8]; // index tip
+
+    document.getElementById('wx').textContent  = w.x.toFixed(3);
+    document.getElementById('wy').textContent  = w.y.toFixed(3);
+    document.getElementById('wz').textContent  = w.z.toFixed(4);
+    document.getElementById('itx').textContent = it.x.toFixed(3);
+    document.getElementById('ity').textContent = it.y.toFixed(3);
+
+    if (handedness) {
+      document.getElementById('confVal').textContent =
+        (handedness.score * 100).toFixed(1) + '%';
+      document.getElementById('chiralVal').textContent =
+        handedness.label.toUpperCase();
+    }
+  } else {
+    ['wx','wy','wz','itx','ity','chiralVal','confVal'].forEach(id => {
+      document.getElementById(id).textContent = '——';
+    });
+  }
+}
+</script>
+</body>
+</html>
